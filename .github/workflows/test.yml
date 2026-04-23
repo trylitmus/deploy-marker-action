@@ -5,21 +5,36 @@ on:
   pull_request:
 
 jobs:
-  # The action is skip-on-empty-key when api-key is unset, so we assert it
-  # exits 0 cleanly on a PR without ever touching the network. That's the
-  # cheap smoke test — anything else would require a real Litmus key.
-  skip-when-key-missing:
+  # Empty auth token → warn + exit 0. No network traffic.
+  skip-when-token-missing:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./
-        with:
-          api-key: ''
-          service: deploy-marker-action-selftest
-          environment: test
+        env:
+          LITMUS_AUTH_TOKEN: ''
+          LITMUS_SERVICE: selftest
 
-  # Validates the payload builds cleanly against a local mock (nc listening
-  # on a loopback port). Catches jq/escape regressions.
+  # Missing service → explicit error. This is a config bug, not a transient
+  # failure, so we surface it rather than skipping.
+  fail-when-service-missing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        id: run
+        continue-on-error: true
+        env:
+          LITMUS_AUTH_TOKEN: ltm_sk_test_fake
+          LITMUS_SERVICE: ''
+      - name: Assert step failed
+        run: |
+          if [ "${{ steps.run.outcome }}" != "failure" ]; then
+            echo "expected failure, got ${{ steps.run.outcome }}"
+            exit 1
+          fi
+
+  # Payload shape against a local mock. Catches jq/escape regressions.
   payload-shape:
     runs-on: ubuntu-latest
     steps:
@@ -33,17 +48,17 @@ jobs:
           echo $! > /tmp/mock.pid
           sleep 1
       - uses: ./
+        env:
+          LITMUS_AUTH_TOKEN: ltm_sk_test_fakefakefakefakefakefakefakefake
+          LITMUS_SERVICE: selftest
+          LITMUS_URL: http://127.0.0.1:18081
         with:
-          api-key: ltm_sk_test_fakefakefakefakefakefakefakefake
-          service: selftest
           environment: production
-          api-url: http://127.0.0.1:18081
       - name: Assert request body has expected shape
         run: |
           grep -q '"service":"selftest"' /tmp/mock/req.log
           grep -q '"environment":"production"' /tmp/mock/req.log
           grep -q '"run_number":' /tmp/mock/req.log
-          # run_number must be a number, not a string
           ! grep -q '"run_number":"' /tmp/mock/req.log
       - name: Stop mock
         if: always()
