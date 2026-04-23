@@ -1,0 +1,93 @@
+name: Litmus Deploy Marker
+description: Post a deploy marker to Litmus so behavioral-rate shifts line up with specific releases.
+author: trylitmus
+branding:
+  icon: flag
+  color: green
+
+inputs:
+  api-key:
+    description: Litmus secret API key (ltm_sk_*) with deploys:write scope. Create one in the Litmus dashboard.
+    required: true
+  service:
+    description: Service name, written to metadata.service so multiple services on one project can be distinguished.
+    required: true
+  environment:
+    description: Deploy environment (production, staging, preview, etc.)
+    required: false
+    default: production
+  version:
+    description: Version string. Defaults to the first 7 characters of the commit SHA.
+    required: false
+    default: ''
+  description:
+    description: Human-readable marker description shown on the dashboard.
+    required: false
+    default: ''
+  api-url:
+    description: Override the Litmus ingest URL. Default points at prod.
+    required: false
+    default: https://ingest.trylitmus.app
+
+runs:
+  using: composite
+  steps:
+    - name: Post deploy marker
+      shell: bash
+      env:
+        INPUT_API_KEY: ${{ inputs.api-key }}
+        INPUT_SERVICE: ${{ inputs.service }}
+        INPUT_ENVIRONMENT: ${{ inputs.environment }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_DESCRIPTION: ${{ inputs.description }}
+        INPUT_API_URL: ${{ inputs.api-url }}
+        GH_SHA: ${{ github.sha }}
+        GH_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        GH_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        GH_RUN_NUMBER: ${{ github.run_number }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${INPUT_API_KEY}" ]; then
+          echo "::warning::api-key is empty; skipping Litmus deploy marker"
+          exit 0
+        fi
+
+        VERSION="${INPUT_VERSION}"
+        if [ -z "${VERSION}" ]; then
+          VERSION="${GH_SHA:0:7}"
+        fi
+
+        DESCRIPTION="${INPUT_DESCRIPTION}"
+        if [ -z "${DESCRIPTION}" ]; then
+          DESCRIPTION="${INPUT_SERVICE} ${INPUT_ENVIRONMENT} deploy"
+        fi
+
+        PAYLOAD=$(jq -n \
+          --arg version "$VERSION" \
+          --arg environment "$INPUT_ENVIRONMENT" \
+          --arg commit_sha "$GH_SHA" \
+          --arg repo_url "$GH_REPO_URL" \
+          --arg url "$GH_RUN_URL" \
+          --arg description "$DESCRIPTION" \
+          --arg service "$INPUT_SERVICE" \
+          --argjson run_number "$GH_RUN_NUMBER" \
+          '{
+            version: $version,
+            environment: $environment,
+            commit_sha: $commit_sha,
+            repo_url: $repo_url,
+            url: $url,
+            description: $description,
+            metadata: {service: $service, run_number: $run_number}
+          }')
+
+        echo "Posting marker version=${VERSION} environment=${INPUT_ENVIRONMENT} service=${INPUT_SERVICE}"
+
+        curl --fail-with-body --silent --show-error \
+          --connect-timeout 10 --max-time 30 \
+          --retry 2 --retry-delay 2 --retry-connrefused \
+          -X POST "${INPUT_API_URL}/v1/versions" \
+          -H "Authorization: Bearer ${INPUT_API_KEY}" \
+          -H "Content-Type: application/json" \
+          -d "$PAYLOAD"

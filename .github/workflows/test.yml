@@ -1,0 +1,50 @@
+name: Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # The action is skip-on-empty-key when api-key is unset, so we assert it
+  # exits 0 cleanly on a PR without ever touching the network. That's the
+  # cheap smoke test — anything else would require a real Litmus key.
+  skip-when-key-missing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          api-key: ''
+          service: deploy-marker-action-selftest
+          environment: test
+
+  # Validates the payload builds cleanly against a local mock (nc listening
+  # on a loopback port). Catches jq/escape regressions.
+  payload-shape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start mock server
+        run: |
+          mkdir -p /tmp/mock
+          (while true; do
+            printf 'HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}' | nc -l -q 1 127.0.0.1 18081 >> /tmp/mock/req.log 2>&1
+          done) &
+          echo $! > /tmp/mock.pid
+          sleep 1
+      - uses: ./
+        with:
+          api-key: ltm_sk_test_fakefakefakefakefakefakefakefake
+          service: selftest
+          environment: production
+          api-url: http://127.0.0.1:18081
+      - name: Assert request body has expected shape
+        run: |
+          grep -q '"service":"selftest"' /tmp/mock/req.log
+          grep -q '"environment":"production"' /tmp/mock/req.log
+          grep -q '"run_number":' /tmp/mock/req.log
+          # run_number must be a number, not a string
+          ! grep -q '"run_number":"' /tmp/mock/req.log
+      - name: Stop mock
+        if: always()
+        run: kill "$(cat /tmp/mock.pid)" || true
