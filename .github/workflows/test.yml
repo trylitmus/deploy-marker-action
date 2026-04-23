@@ -80,11 +80,13 @@ jobs:
           echo "captured body:"
           cat /tmp/mock/req.log
           echo
-          grep -q '"service":"selftest"' /tmp/mock/req.log
-          grep -q '"environment":"production"' /tmp/mock/req.log
-          grep -q '"run_number":' /tmp/mock/req.log
-          # run_number must be a JSON number, not a string
-          ! grep -q '"run_number":"' /tmp/mock/req.log
+          # jq produces pretty-printed JSON; use jq to assert field values
+          # so the test doesn't wedge on whitespace.
+          jq -e '.metadata.service == "selftest"' /tmp/mock/req.log >/dev/null
+          jq -e '.environment == "production"' /tmp/mock/req.log >/dev/null
+          jq -e '.metadata.run_number | type == "number"' /tmp/mock/req.log >/dev/null
+          jq -e '.commit_sha | length == 40' /tmp/mock/req.log >/dev/null
+          jq -e '.version | length == 7' /tmp/mock/req.log >/dev/null
       - name: Stop mock
         if: always()
         run: kill "$(cat /tmp/mock.pid)" || true
